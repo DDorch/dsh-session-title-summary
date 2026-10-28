@@ -19,7 +19,9 @@ DSH 插件 session-title-summary（纯 host）：每轮对话结束后把新事�
   signal, delivery:'caller', request})`（label/signal 移到 request 外），≤0.1.x
   回退 `subagents.start('spawn', 扁平request)`；两者皆无则抛错由 catch 降级。
   子代理继承父 agent 模型路由与工作区，主对话不被阻塞（`delivery:'caller'`
-  不通知父模型）；结构化输出 + 8192 token 预算防截断。
+  不通知父模型）；结构化输出 + 8192 token 预算防截断。provider/model 配置经
+  `agentOptions` 真实改路由（spawn 在创建子代理时合并到父路由之上），不再是
+  prompt 提示。
 - 结构分区：`src/index.ts` 是 host 半区（事件监听 + 子代理调度 + rename），
   `src/core/` 是纯逻辑（`events.ts` 事件摘要、`summary.ts` 折叠 prompt 与解析、
   `store.ts` 原子文件存储、`home.ts` DSH_HOME 解析）——core 不依赖 cordis，可单测。
