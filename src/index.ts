@@ -180,6 +180,103 @@ async function foldOnce(ctx: Context, agent: Agent, cfg: ResolvedConfig, turn: n
   }
 }
 
+/** The shape of the subagent result the fold consumes. */
+export interface FoldResult {
+  /** Final assistant output blocks (the text fallback path). */
+  output?: readonly { type?: string; text?: string }[]
+  /** Structured object matching `outputSchema` (when the provider honored it). */
+  structured?: unknown
+}
+
+/** Handle a spawn entry point returns: the fold only awaits the result. */
+export interface FoldSpawnHandle {
+  result: Promise<FoldResult>
+}
+
+/**
+ * Spawn the fold subagent on whatever spawn entry point the host's
+ * `subagents` service exposes.
+ *
+ * dsh-subagent 0.2.1 renamed the public entry point `start` to
+ * `startActivation` and re-shaped the spec: `label` and `signal` moved out of
+ * the request into the activation spec, and `delivery` became mandatory.
+ * Calling the removed method throws `TypeError: subagents.start is not a
+ * function`, which this plugin's catch swallows — on 0.2.1 hosts every fold
+ * then "failed" silently (no summary, no rename, no child). The surface is
+ * therefore probed at runtime and each generation is called in its own shape.
+ *
+ * `delivery: 'caller'` on 0.2.1+ keeps the child out of the parent
+ * transcript: the plugin only consumes the structured result; the parent
+ * model must not be notified of the fold.
+ *
+ * @param subagents - the host `subagents` service. Typed loosely on purpose:
+ *   the two generations expose different entry points, and the plugin must
+ *   compile against the newest types while still running on the older one.
+ * @param agent - the live parent agent; the child inherits its route and workspace.
+ * @param promptText - the fold prompt (system prompt + route note + user digest).
+ * @param signal - cancellation (the per-fold timeout controller).
+ * @returns the spawn handle; await `.result` for the fold output.
+ * @throws when the service exposes neither entry point (an unknown future
+ *   generation) — the caller's catch turns that into the usual warn-and-skip.
+ */
+export async function spawnFoldSubagent(
+  subagents: unknown,
+  agent: Agent,
+  promptText: string,
+  signal: AbortSignal,
+): Promise<FoldSpawnHandle> {
+  const request = {
+    prompt: [
+      { type: 'text' as const, text: promptText },
+    ],
+    parent: agent,
+    // Structured output: the child returns an object instead of hand-writing
+    // JSON text, so truncation can no longer produce an unparseable blob.
+    // The summary (up to SUMMARY_MAX_CHARS) plus the title needs a generous
+    // budget; 4096 was still cut off for CJK, so go to 8192 with margin.
+    agentOptions: { maxTokens: 8192 },
+    outputSchema: {
+      type: 'object' as const,
+      properties: {
+        summary: { type: 'string' as const },
+        title: { type: 'string' as const },
+      },
+      required: ['summary', 'title'],
+      additionalProperties: false,
+    },
+  }
+  type SpawnService = {
+    startActivation?(spec: {
+      provider: string
+      label: string
+      signal: AbortSignal
+      delivery: 'parent' | 'caller'
+      request: typeof request
+    }): Promise<FoldSpawnHandle>
+    start?(provider: string, spec: typeof request & { label: string; signal: AbortSignal }): Promise<FoldSpawnHandle>
+  }
+  const service = subagents as SpawnService
+  const startActivation = service.startActivation
+  if (typeof startActivation === 'function') {
+    return startActivation.call(service, {
+      provider: 'spawn',
+      label: 'session-title-summary',
+      signal,
+      delivery: 'caller',
+      request,
+    })
+  }
+  const start = service.start
+  if (typeof start === 'function') {
+    return start.call(service, 'spawn', {
+      ...request,
+      label: 'session-title-summary',
+      signal,
+    })
+  }
+  throw new Error('subagents service exposes neither startActivation (dsh-subagent 0.2.1+) nor start (dsh-subagent 0.1.x)')
+}
+
 /** Resolve the fold result through one subagent call (parent = the live agent,
  * so the child inherits the same model route and workspace). */
 async function callSummarizer(
@@ -204,28 +301,10 @@ async function callSummarizer(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort('session-title-summary timeout'), cfg.timeoutMs)
   try {
-    const run = await subagents.start('spawn', {
-      label: 'session-title-summary',
-      prompt: [
-        { type: 'text', text: `${system}${routeNote}\n\n${userPrompt}` },
-      ],
-      signal: controller.signal,
-      parent: agent,
-      // Structured output: the child returns an object instead of hand-writing
-      // JSON text, so truncation can no longer produce an unparseable blob.
-      // The summary (up to SUMMARY_MAX_CHARS) plus the title needs a generous
-      // budget; 4096 was still cut off for CJK, so go to 8192 with margin.
-      agentOptions: { maxTokens: 8192 },
-      outputSchema: {
-        type: 'object',
-        properties: {
-          summary: { type: 'string' },
-          title: { type: 'string' },
-        },
-        required: ['summary', 'title'],
-        additionalProperties: false,
-      },
-    })
+    // Dual-path spawn: dsh-subagent 0.2.1 renamed `start` to `startActivation`
+    // (and moved `label`/`signal` out of the request), so the entry point is
+    // probed at runtime — hosts on either generation keep folding.
+    const run = await spawnFoldSubagent(subagents, agent, `${system}${routeNote}\n\n${userPrompt}`, controller.signal)
     const result = await run.result
     // Structured output lands in `result.structured` when the provider honors
     // outputSchema; fall back to parsing text blocks for providers that don't.

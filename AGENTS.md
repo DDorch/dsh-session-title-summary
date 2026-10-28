@@ -14,9 +14,12 @@ DSH 插件 session-title-summary（纯 host）：每轮对话结束后把新事�
   事件用 `session.snapshotEvents()` / `ownEvents()` 读取。
 - 触发：监听 `agent/turn-stopping`（agent 级事件，宿主插件可靠接收；`session/event`
   是 session-scoped 事件，插件 fiber 收不到）。收尾延迟 600ms 后派生子代理。
-- 总结：`subagents.start('spawn', { prompt, parent: agent, outputSchema,
-  agentOptions.maxTokens })`——子代理继承父 agent 模型路由与工作区，主对话不被
-  阻塞；结构化输出 + 8192 token 预算防截断。
+- 总结：`spawnFoldSubagent(...)`（host 半区）按运行时探测调用宿主 spawn 入口——
+  dsh-subagent ≥0.2.1 用 `subagents.startActivation({provider:'spawn', label,
+  signal, delivery:'caller', request})`（label/signal 移到 request 外），≤0.1.x
+  回退 `subagents.start('spawn', 扁平request)`；两者皆无则抛错由 catch 降级。
+  子代理继承父 agent 模型路由与工作区，主对话不被阻塞（`delivery:'caller'`
+  不通知父模型）；结构化输出 + 8192 token 预算防截断。
 - 结构分区：`src/index.ts` 是 host 半区（事件监听 + 子代理调度 + rename），
   `src/core/` 是纯逻辑（`events.ts` 事件摘要、`summary.ts` 折叠 prompt 与解析、
   `store.ts` 原子文件存储、`home.ts` DSH_HOME 解析）——core 不依赖 cordis，可单测。
