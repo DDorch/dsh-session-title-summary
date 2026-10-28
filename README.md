@@ -18,7 +18,9 @@ official NPM SDK — no DSH source changes.
   uses) on every live top-level agent.
 - After the turn settles, it spawns a **subagent** with the live agent as the
   parent, so the child inherits the same model route and workspace and the main
-  conversation is never blocked or polluted.
+  conversation is never blocked or polluted. An optional `provider`/`model`
+  setting re-routes the child through the subagent's `agentOptions` (a real
+  route override, not a prompt hint) — see Configuration.
 - The subagent receives the previous rolling summary plus a digest of the new
   events (user prompts, assistant replies, tool calls with names/arguments/
   results) and returns an updated summary and a new title as a structured
@@ -74,7 +76,7 @@ The Web settings surface renders a section for this plugin:
 | `enabled` | `true` | Master switch. Turn it off to keep session titles untouched (the plugin then does nothing). |
 | `targetWords` | `6` | Prompt target for non-CJK title length (words); the enforced cap is display width. |
 | `targetCjkCharacters` | `10` | Enforced title width cap in CJK characters (2 ASCII/half-width chars = 1 CJK). |
-| `provider` / `model` | session route | Optional explicit LLM route override; default follows the session's current model. |
+| `provider` / `model` | session route | Optional explicit LLM route override, forwarded to the subagent via `agentOptions` (the spawn provider merges it over the inherited parent route — a real route change, not a prompt hint). Both must be set; default follows the session's current model. |
 | `timeoutMs` | `90000` | Per-fold subagent timeout. |
 
 ## Data

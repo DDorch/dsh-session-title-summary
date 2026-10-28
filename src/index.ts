@@ -42,9 +42,11 @@ export interface Config {
   targetWords?: number
   /** Target title length in CJK characters. */
   targetCjkCharacters?: number
-  /** Explicit LLM route override; defaults to the session's current route. */
+  /** Explicit LLM route override, forwarded to the child through
+   *  `agentOptions` (the spawn provider merges it over the inherited parent
+   *  route); defaults to the session's current route. */
   provider?: string
-  /** Explicit LLM route override; defaults to the session's current route. */
+  /** Explicit LLM route override (see `provider`); both must be set. */
   model?: string
   /** Per-fold subagent timeout. */
   timeoutMs?: number
@@ -213,8 +215,11 @@ export interface FoldSpawnHandle {
  *   the two generations expose different entry points, and the plugin must
  *   compile against the newest types while still running on the older one.
  * @param agent - the live parent agent; the child inherits its route and workspace.
- * @param promptText - the fold prompt (system prompt + route note + user digest).
+ * @param promptText - the fold prompt (system prompt + user digest).
  * @param signal - cancellation (the per-fold timeout controller).
+ * @param route - optional explicit LLM route (provider + model); when set it
+ *   is a real route override: the spawn provider merges `agentOptions` over
+ *   the inherited parent route when it creates the child.
  * @returns the spawn handle; await `.result` for the fold output.
  * @throws when the service exposes neither entry point (an unknown future
  *   generation) — the caller's catch turns that into the usual warn-and-skip.
@@ -224,6 +229,7 @@ export async function spawnFoldSubagent(
   agent: Agent,
   promptText: string,
   signal: AbortSignal,
+  route?: { provider: string; model: string },
 ): Promise<FoldSpawnHandle> {
   const request = {
     prompt: [
@@ -234,7 +240,9 @@ export async function spawnFoldSubagent(
     // JSON text, so truncation can no longer produce an unparseable blob.
     // The summary (up to SUMMARY_MAX_CHARS) plus the title needs a generous
     // budget; 4096 was still cut off for CJK, so go to 8192 with margin.
-    agentOptions: { maxTokens: 8192 },
+    // provider/model (when configured) override the inherited parent route;
+    // a prompt hint cannot re-route a child, agentOptions can.
+    agentOptions: { maxTokens: 8192, ...(route ?? {}) },
     outputSchema: {
       type: 'object' as const,
       properties: {
@@ -292,11 +300,13 @@ async function callSummarizer(
   const userPrompt = buildUserPrompt(oldSummary, digest)
   const system = buildSystemPrompt(cfg.targetWords, cfg.targetCjkCharacters)
 
-  // Route override: ask the subagent to prefer a specific provider/model when
-  // configured; otherwise it inherits the parent's route automatically.
-  const routeNote = cfg.provider !== undefined && cfg.model !== undefined
-    ? `\nUse provider "${cfg.provider}" and model "${cfg.model}" for this task.`
-    : ''
+  // Route override: when both provider and model are configured, forward
+  // them through agentOptions — a real route override the spawn provider
+  // merges over the inherited parent route. A prompt hint alone cannot
+  // re-route a child.
+  const route = cfg.provider !== undefined && cfg.model !== undefined
+    ? { provider: cfg.provider, model: cfg.model }
+    : undefined
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort('session-title-summary timeout'), cfg.timeoutMs)
@@ -304,7 +314,7 @@ async function callSummarizer(
     // Dual-path spawn: dsh-subagent 0.2.1 renamed `start` to `startActivation`
     // (and moved `label`/`signal` out of the request), so the entry point is
     // probed at runtime — hosts on either generation keep folding.
-    const run = await spawnFoldSubagent(subagents, agent, `${system}${routeNote}\n\n${userPrompt}`, controller.signal)
+    const run = await spawnFoldSubagent(subagents, agent, `${system}\n\n${userPrompt}`, controller.signal, route)
     const result = await run.result
     // Structured output lands in `result.structured` when the provider honors
     // outputSchema; fall back to parsing text blocks for providers that don't.
