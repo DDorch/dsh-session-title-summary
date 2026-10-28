@@ -106,6 +106,26 @@ describe('summary prompts', () => {
     expect(next).toContain('old summary')
     expect(next).toContain('newer work')
   })
+
+  it('pins the language to the user\'s messages when no language is set', () => {
+    const system = buildSystemPrompt(6, 10)
+    expect(system).toContain('LANGUAGE RULE')
+    expect(system).toContain('SAME LANGUAGE as the user\'s own messages')
+    // Must forbid the CJK-default fallback that plagued real folds.
+    expect(system).toContain('never write in Chinese')
+  })
+
+  it('honors an explicit language override and trims it', () => {
+    const system = buildSystemPrompt(6, 10, '  French  ')
+    expect(system).toContain('LANGUAGE RULE: write every summary line and the title in French.')
+    // The "follow the user's language" default must not leak into the override.
+    expect(system).not.toContain("SAME LANGUAGE as the user's own messages")
+  })
+
+  it('treats a blank language the same as no language', () => {
+    const system = buildSystemPrompt(6, 10, '   ')
+    expect(system).toContain("SAME LANGUAGE as the user's own messages")
+  })
 })
 
 describe('parseSummaryResult', () => {

@@ -140,12 +140,36 @@ function fitTokens(tokens: string[], maxWidth: number): string {
  * Build the system instruction for the folding call.
  * @param targetWords - target title length in words (non-CJK).
  * @param targetCjkCharacters - target title length in CJK characters.
+ * @param language - explicit output language (e.g. "fr", "English"); when
+ *   omitted, the fold is pinned to the language of the user's messages
+ *   instead of the model's default language.
  * @returns the system prompt text.
  */
-export function buildSystemPrompt(targetWords: number = 6, targetCjkCharacters: number = 10): string {
+export function buildSystemPrompt(
+  targetWords: number = 6,
+  targetCjkCharacters: number = 10,
+  language?: string,
+): string {
+  const explicitLanguage = language?.trim()
+  // Language coherence: some backends (CJK-defaulting models in particular)
+  // otherwise answer in their own default language. An explicit setting wins;
+  // otherwise the output must follow the language the user writes in.
+  const languageRule =
+    explicitLanguage !== undefined && explicitLanguage !== ''
+      ? [
+          `LANGUAGE RULE: write every summary line and the title in ${explicitLanguage}. `,
+          'This rule takes precedence over the example lines below, which only illustrate the format.',
+        ]
+      : [
+          'LANGUAGE RULE: write every summary line and the title in the SAME LANGUAGE as the user\'s own messages in the "New work" digest — the language the user is writing in.',
+          'Never fall back to a default model language (for example, never write in Chinese when the user writes in French or English). ',
+          'This rule takes precedence over the example lines below, which only illustrate the format.',
+        ]
   return [
     'You are a session-summary assistant for an AI coding tool.',
     'You maintain a rolling outline of EVERYTHING the user and the assistant did in this session.',
+    '',
+    ...languageRule,
     '',
     'Definitions:',
     '- "Major topic" (大问题): the session-level GOAL the user is working toward — the overall thing being built or done, e.g. "开发标题自动总结功能", "整理照片归档".',

@@ -48,6 +48,10 @@ export interface Config {
   provider?: string
   /** Explicit LLM route override (see `provider`); both must be set. */
   model?: string
+  /** Explicit output language for the summary and title (e.g. "fr",
+   *  "English"); when omitted, the fold follows the language of the user's
+   *  messages in the session. */
+  language?: string
   /** Per-fold subagent timeout. */
   timeoutMs?: number
 }
@@ -58,6 +62,7 @@ export const Config: z<Config> = z.object({
   targetCjkCharacters: z.natural().min(1).default(10),
   provider: z.string(),
   model: z.string(),
+  language: z.string(),
   timeoutMs: z.natural().min(1000).default(90000),
 })
 
@@ -81,6 +86,7 @@ interface ResolvedConfig {
   targetCjkCharacters: number
   provider?: string
   model?: string
+  language?: string
   timeoutMs: number
 }
 
@@ -93,6 +99,7 @@ function resolveConfig(source: () => Config): ResolvedConfig {
     targetCjkCharacters: value.targetCjkCharacters ?? 10,
     provider: value.provider,
     model: value.model,
+    language: value.language,
     timeoutMs: value.timeoutMs ?? 90000,
   }
 }
@@ -298,7 +305,7 @@ async function callSummarizer(
   if (subagents === undefined) return undefined
 
   const userPrompt = buildUserPrompt(oldSummary, digest)
-  const system = buildSystemPrompt(cfg.targetWords, cfg.targetCjkCharacters)
+  const system = buildSystemPrompt(cfg.targetWords, cfg.targetCjkCharacters, cfg.language)
 
   // Route override: when both provider and model are configured, forward
   // them through agentOptions — a real route override the spawn provider
