@@ -4,7 +4,8 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { digestEvent, digestEvents } from '../src/core/events.ts'
+import { digestEvent, digestEvents, userTextOf } from '../src/core/events.ts'
+import { detectSessionLanguage, LANGUAGE_NAMES } from '../src/core/language.ts'
 import { buildSystemPrompt, buildUserPrompt, displayWidth, nextSummary, parseSummaryResult, truncateTitleByWidth } from '../src/core/summary.ts'
 import { readSummary, summaryPath, writeSummary } from '../src/core/store.ts'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -21,7 +22,7 @@ describe('digestEvent', () => {
     const line = digestEvent(event('user/message', {
       content: [{ type: 'text', text: '解压文件后分类整理' }],
     }, 1))
-    expect(line).toBe('用户: 解压文件后分类整理')
+    expect(line).toBe('User: 解压文件后分类整理')
   })
 
   it('skips non-text user content', () => {
@@ -32,7 +33,7 @@ describe('digestEvent', () => {
     const line = digestEvent(event('assistant/message', {
       message: { content: [{ type: 'text', text: '已完成分类' }] },
     }, 2))
-    expect(line).toBe('助手: 已完成分类')
+    expect(line).toBe('Assistant: 已完成分类')
   })
 
   it('renders tool calls with parsed arguments', () => {
@@ -40,17 +41,17 @@ describe('digestEvent', () => {
       name: 'extract_archive',
       arguments: '{"path":"a.7z"}',
     }, 3))
-    expect(line).toBe('工具调用: extract_archive({"path":"a.7z"})')
+    expect(line).toBe('Tool call: extract_archive({"path":"a.7z"})')
   })
 
   it('renders tool results and marks errors', () => {
     expect(digestEvent(event('tool/result', {
       message: { content: [{ type: 'text', text: 'ok' }] },
-    }, 4))).toBe('工具结果: ok')
+    }, 4))).toBe('Tool result: ok')
     expect(digestEvent(event('tool/result', {
       message: { content: [{ type: 'text', text: 'boom' }] },
       error: { name: 'E', code: 'ERR' },
-    }, 5))).toBe('工具结果(出错): boom')
+    }, 5))).toBe('Tool result (error): boom')
   })
 
   it('skips boundaries and log-only events', () => {
@@ -60,8 +61,8 @@ describe('digestEvent', () => {
 
   it('clips long lines', () => {
     const line = digestEvent(event('user/message', { content: [{ type: 'text', text: 'x'.repeat(500) }] }, 8))
-    // 4-char "用户: " prefix + the 240-char clip bound.
-    expect(line?.length).toBeLessThanOrEqual(245)
+    // 6-char "User: " prefix + the 240-char clip bound.
+    expect(line?.length).toBeLessThanOrEqual(246)
     expect(line?.endsWith('…')).toBe(true)
   })})
 
@@ -73,7 +74,7 @@ describe('digestEvents', () => {
       event('tool/call', { name: 'x', arguments: '{}' }, 3),
       event('assistant/message', { message: { content: [{ type: 'text', text: 'b' }] } }, 4),
     ])
-    expect(digest).toBe('用户: a\n工具调用: x({})\n助手: b')
+    expect(digest).toBe('User: a\nTool call: x({})\nAssistant: b')
   })
 
   it('keeps the newest lines when the digest exceeds the bound', () => {
@@ -85,6 +86,48 @@ describe('digestEvents', () => {
     // Newest content (m599) survives; the oldest (m0) was dropped.
     expect(digest).toContain('m599'.repeat(50).slice(0, 20))
     expect(digest).not.toContain('m0'.repeat(50).slice(0, 20))
+  })
+})
+
+describe('userTextOf', () => {
+  it('joins only user messages, newest within the bound', () => {
+    const text = userTextOf([
+      event('user/message', { content: [{ type: 'text', text: 'first prompt' }] }, 1),
+      event('assistant/message', { message: { content: [{ type: 'text', text: 'assistant reply' }] } }, 2),
+      event('user/message', { content: [{ type: 'text', text: 'second prompt' }] }, 3),
+      event('tool/call', { name: 'x', arguments: '{}' }, 4),
+    ])
+    expect(text).toBe('first prompt\nsecond prompt')
+  })
+
+  it('returns empty when there are no user messages', () => {
+    expect(userTextOf([
+      event('assistant/message', { message: { content: [{ type: 'text', text: 'hello' }] } }, 1),
+    ])).toBe('')
+  })
+})
+
+describe('detectSessionLanguage', () => {
+  it('detects French from accented text and function words', () => {
+    expect(detectSessionLanguage('Bonjour, pouvez-vous vérifier le build et corriger le problème ? Merci beaucoup.')).toBe('fr')
+  })
+
+  it('detects English latin text without French signals', () => {
+    expect(detectSessionLanguage('Please check the build and fix the failing tests, then push the branch.')).toBe('en')
+  })
+
+  it('keeps Chinese when the user writes in Chinese', () => {
+    expect(detectSessionLanguage('请检查构建并修复失败的测试，然后推送分支。谢谢。')).toBe('zh')
+  })
+
+  it('returns other for very short text', () => {
+    expect(detectSessionLanguage('ok')).toBe('other')
+  })
+
+  it('exposes a human name for each concrete language', () => {
+    expect(LANGUAGE_NAMES.fr).toBe('French')
+    expect(LANGUAGE_NAMES.en).toBe('English')
+    expect(LANGUAGE_NAMES.zh).toBe('Chinese')
   })
 })
 
@@ -125,6 +168,24 @@ describe('summary prompts', () => {
   it('treats a blank language the same as no language', () => {
     const system = buildSystemPrompt(6, 10, '   ')
     expect(system).toContain("SAME LANGUAGE as the user's own messages")
+  })
+
+  it('pins the language to the detected working language and never to the old summary\'s', () => {
+    const system = buildSystemPrompt(6, 10, undefined, 'fr')
+    expect(system).toContain("LANGUAGE RULE: write every summary line and the title in French — the user's current working language.")
+    // A Chinese old summary must be restated, not continued.
+    expect(system).toContain('LANGUAGE CONTINUITY')
+    expect(system).toContain('Restate EVERY topic of the old summary in the target language above')
+    // An explicit setting wins over detection.
+    const explicit = buildSystemPrompt(6, 10, 'English', 'fr')
+    expect(explicit).toContain('LANGUAGE RULE: write every summary line and the title in English.')
+    expect(explicit).not.toContain('the user\'s current working language')
+  })
+
+  it('stays free of CJK anchoring (no Han characters anywhere in the prompt)', () => {
+    expect(/\p{Script=Han}/u.test(buildSystemPrompt(6, 10))).toBe(false)
+    expect(/\p{Script=Han}/u.test(buildSystemPrompt(6, 10, undefined, 'fr'))).toBe(false)
+    expect(/\p{Script=Han}/u.test(buildSystemPrompt(6, 10, undefined, 'zh'))).toBe(false)
   })
 })
 

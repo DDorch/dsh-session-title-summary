@@ -10,6 +10,8 @@
  * the CURRENT task only.
  */
 
+import { LANGUAGE_NAMES, type SessionLanguage } from './language.ts'
+
 /** JSON result the model must return: updated summary + a concise title. */
 export interface SummaryResult {
   summary: string
@@ -140,40 +142,55 @@ function fitTokens(tokens: string[], maxWidth: number): string {
  * Build the system instruction for the folding call.
  * @param targetWords - target title length in words (non-CJK).
  * @param targetCjkCharacters - target title length in CJK characters.
- * @param language - explicit output language (e.g. "fr", "English"); when
- *   omitted, the fold is pinned to the language of the user's messages
- *   instead of the model's default language.
+ * @param language - explicit output language (e.g. "fr", "English"); wins
+ *   over everything else.
+ * @param detected - the language detected from the user's recent messages;
+ *   used when no explicit `language` is set. A CONCRETE language name is
+ *   injected, because a soft "match the user's language" instruction is
+ *   ignored by CJK-defaulting backends.
  * @returns the system prompt text.
  */
 export function buildSystemPrompt(
   targetWords: number = 6,
   targetCjkCharacters: number = 10,
   language?: string,
+  detected?: SessionLanguage,
 ): string {
   const explicitLanguage = language?.trim()
-  // Language coherence: some backends (CJK-defaulting models in particular)
-  // otherwise answer in their own default language. An explicit setting wins;
-  // otherwise the output must follow the language the user writes in.
-  const languageRule =
-    explicitLanguage !== undefined && explicitLanguage !== ''
-      ? [
-          `LANGUAGE RULE: write every summary line and the title in ${explicitLanguage}. `,
-          'This rule takes precedence over the example lines below, which only illustrate the format.',
-        ]
-      : [
-          'LANGUAGE RULE: write every summary line and the title in the SAME LANGUAGE as the user\'s own messages in the "New work" digest — the language the user is writing in.',
-          'Never fall back to a default model language (for example, never write in Chinese when the user writes in French or English). ',
-          'This rule takes precedence over the example lines below, which only illustrate the format.',
-        ]
+  // Language coherence, in decreasing order of authority:
+  // 1. an explicit `language` setting (user choice);
+  // 2. the language DETECTED from the user's recent messages — named
+  //    concretely in the prompt (a CJK-defaulting backend ignores a soft
+  //    "match the user's language" instruction);
+  // 3. fallback: the language of the user's messages (undetectable).
+  let languageRule: string[]
+  if (explicitLanguage !== undefined && explicitLanguage !== '') {
+    languageRule = [
+      `LANGUAGE RULE: write every summary line and the title in ${explicitLanguage}.`,
+    ]
+  } else if (detected !== undefined && detected !== 'other') {
+    languageRule = [
+      `LANGUAGE RULE: write every summary line and the title in ${LANGUAGE_NAMES[detected]} — the user's current working language.`,
+      'Never write in any other language, including your default language.',
+    ]
+  } else {
+    languageRule = [
+      'LANGUAGE RULE: write every summary line and the title in the SAME LANGUAGE as the user\'s own messages in the "New work" digest.',
+      'Never fall back to a default model language (for example, never write in Chinese when the user writes in French or English).',
+    ]
+  }
   return [
     'You are a session-summary assistant for an AI coding tool.',
     'You maintain a rolling outline of EVERYTHING the user and the assistant did in this session.',
     '',
     ...languageRule,
+    'LANGUAGE CONTINUITY: the "Old summary" may be in a DIFFERENT language (it was written by a previous',
+    'folding pass). Restate EVERY topic of the old summary in the target language above. Never copy or',
+    'append a line in the old summary\'s language when the target language differs.',
     '',
     'Definitions:',
-    '- "Major topic" (大问题): the session-level GOAL the user is working toward — the overall thing being built or done, e.g. "开发标题自动总结功能", "整理照片归档".',
-    '- "Minor topic" (小问题): one specific item UNDER that major topic — a concrete step, issue, or fix, e.g. "修复子代理输出token上限", "调整摘要格式".',
+    '- "Major topic": the session-level GOAL the user is working toward — the overall thing being built or done, e.g. "Build title-summary plugin", "Organize photo archive".',
+    '- "Minor topic": one specific item UNDER that major topic — a concrete step, issue, or fix, e.g. "fix subagent output token limit", "tune summary format".',
     '',
     'You receive:',
     '- "Old summary": the previous outline of everything that happened BEFORE the new work.',
@@ -183,7 +200,7 @@ export function buildSystemPrompt(
     '- "summary": the UPDATED outline, covering the WHOLE session — nothing important is dropped. ',
     '  Every line is ONE bullet of the form "major topic - minor topic", joined with a "-". ',
     '  The major topic names the GOAL; the minor topic names the specific item under it. ',
-    '  Example lines: "开发标题自动总结功能 - 修复子代理输出token上限", "整理照片归档 - 解压与分类". ',
+    '  Example lines: "Build title-summary plugin - fix subagent output token limit", "Organize photo archive - extract and classify". ',
     '  Group lines by major topic: lines of the same major topic stay together, and different major topics ',
     '  are separated by a blank line. ',
     '  Keep every topic that still matters from the old summary (ONE short bullet each — a few words, not a sentence), and add the new work. ',
@@ -192,16 +209,16 @@ export function buildSystemPrompt(
     `  Keep the whole outline under ${SUMMARY_MAX_CHARS} characters.`,
     '',
     '  Example shape:',
-    '  开发标题自动总结功能 - 插件架构(agent/turn-stopping + 子代理)',
-    '  开发标题自动总结功能 - 修复:子代理输出token上限',
-    '  开发标题自动总结功能 - 当前:调整摘要格式',
+    '  Build title-summary plugin - architecture (agent/turn-stopping + subagent)',
+    '  Build title-summary plugin - fix subagent output token limit',
+    '  Build title-summary plugin - current: tune summary format',
     '',
-    '  整理照片归档 - 解压与分类',
-    '  整理照片归档 - 按人物整理',
+    '  Organize photo archive - extract and classify',
+    '  Organize photo archive - sort by person',
     '',
     '- "title": a concise session title reflecting the CURRENT work — the overall GOAL first, then the specific item being handled right now, ',
     '  in the same "major topic - minor topic" form. ',
-    '  Example: "开发总结 - 修复", NOT a run-on sentence. ',
+    '  Example: "Summarize - fix", NOT a run-on sentence. ',
     '  Base it on the NEWEST work at the END of the digest, NOT on how the session started. ',
     '  Early topics are background and must NOT dominate the title. ',
     `  WIDTH RULE: the title must fit ${targetCjkCharacters} CJK characters — each CJK/full-width char counts as 1 CJK, `,
@@ -212,13 +229,14 @@ export function buildSystemPrompt(
     '  Never output a bare "major -" with no minor topic after the dash.',
     '  Never write a full package or file name. ',
     `  That is a HARD LIMIT of ${targetCjkCharacters} CJK characters. `,
-    '  Examples within the limit: "插件修复 - 标题截断", "开发总结 - 修复".',
+    '  Examples within the limit: "Plugin fix - title", "Summarize - fix".',
     '',
     'Rules:',
     '- Return ONLY the JSON object. No markdown fences, no commentary, no trailing text.',
     '- The summary must be self-contained (it replaces the old summary).',
     '- Never invent facts that are not in the old summary or the new work.',
     '- If the session has no title yet, the title names the current task; if it has one, update it to the newest focus.',
+    `- LANGUAGE REMINDER: every line of "summary" and the "title" in ${explicitLanguage !== undefined && explicitLanguage !== '' ? explicitLanguage : detected !== undefined && detected !== 'other' ? LANGUAGE_NAMES[detected] : 'the user\'s own language'}.`,
   ].join('\n')
 }
 

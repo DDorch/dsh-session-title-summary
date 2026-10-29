@@ -28,9 +28,12 @@ DSH 插件 session-title-summary（纯 host）：每轮对话结束后把新事�
 - 摘要格式：每行"大问题 - 小问题"（大问题=会话级目标，小问题=其下具体事项），
   同大问题聚组、异大问题空行分隔；当前大问题最多 3-4 条，旧大问题各 1 条。
   摘要存 `$DSH_HOME/dsh-session-title-summary/<sessionId>.json`。
-- 摘要语言：默认跟随**用户消息**的语言（system prompt 里 LANGUAGE RULE 强制，
-  禁止退回模型默认语言——CJK 后端会漂成中文）；`language` 配置（如 `fr`、
-  `English`）显式覆盖，空串等同未设置。
+- 摘要语言：三级优先——`language` 配置（如 `fr`、`English`）> 从近期用户
+  消息**检测**到的语言（`core/language.ts`，纯函数）> 兜底"跟随用户消息
+  语言"。检测命中时 prompt 显式点名目标语言（LANGUAGE RULE），并带
+  LANGUAGE CONTINUITY 规则（旧摘要是别的语言时必须整段翻译，不得延续旧
+  语言）；CJK 后端会无视软规则，点名才有效。system prompt 与 digest 标签
+  全程无 CJK（防锚定，有测试守卫）。
 - 依赖注入：`inject = ['sessions', 'sessionTitle', 'subagents']`；peer 声明
   dsh-agent / dsh-llm / dsh-session / dsh-session-title / dsh-settings / dsh-subagent。
 - 生命周期纪律：per-session promise 链串行防重；折叠失败只推进游标不重命名，
