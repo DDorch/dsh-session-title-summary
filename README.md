@@ -77,6 +77,7 @@ The Web settings surface renders a section for this plugin:
 | `targetWords` | `6` | Prompt target for non-CJK title length (words); the enforced cap is display width. |
 | `targetCjkCharacters` | `10` | Enforced title width cap in CJK characters (2 ASCII/half-width chars = 1 CJK). |
 | `provider` / `model` | session route | Optional explicit LLM route override, forwarded to the subagent via `agentOptions` (the spawn provider merges it over the inherited parent route — a real route change, not a prompt hint). Both must be set; default follows the session's current model. |
+| `language` | detected working language | Optional explicit output language for the summary and title (e.g. `fr`, `English`). When omitted, the plugin detects the user's current working language from their recent messages and writes the summary and title in that language. An outline previously written in a different language (e.g. Chinese) is restated in the target language, never continued. |
 | `timeoutMs` | `90000` | Per-fold subagent timeout. |
 
 ## Data

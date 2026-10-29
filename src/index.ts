@@ -20,7 +20,8 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-session'
 import z from 'schemastery'
-import { digestEvents } from './core/events.ts'
+import { digestEvents, userTextOf } from './core/events.ts'
+import { detectSessionLanguage, type SessionLanguage } from './core/language.ts'
 import { buildSystemPrompt, buildUserPrompt, nextSummary, parseSummaryResult, truncateTitleByWidth } from './core/summary.ts'
 import { readSummary, writeSummary } from './core/store.ts'
 
@@ -48,6 +49,10 @@ export interface Config {
   provider?: string
   /** Explicit LLM route override (see `provider`); both must be set. */
   model?: string
+  /** Explicit output language for the summary and title (e.g. "fr",
+   *  "English"); when omitted, the fold follows the language of the user's
+   *  messages in the session. */
+  language?: string
   /** Per-fold subagent timeout. */
   timeoutMs?: number
 }
@@ -58,6 +63,7 @@ export const Config: z<Config> = z.object({
   targetCjkCharacters: z.natural().min(1).default(10),
   provider: z.string(),
   model: z.string(),
+  language: z.string(),
   timeoutMs: z.natural().min(1000).default(90000),
 })
 
@@ -81,6 +87,7 @@ interface ResolvedConfig {
   targetCjkCharacters: number
   provider?: string
   model?: string
+  language?: string
   timeoutMs: number
 }
 
@@ -93,6 +100,7 @@ function resolveConfig(source: () => Config): ResolvedConfig {
     targetCjkCharacters: value.targetCjkCharacters ?? 10,
     provider: value.provider,
     model: value.model,
+    language: value.language,
     timeoutMs: value.timeoutMs ?? 90000,
   }
 }
@@ -160,7 +168,13 @@ async function foldOnce(ctx: Context, agent: Agent, cfg: ResolvedConfig, turn: n
   const lastSeq = fresh[fresh.length - 1].seq
   if (digest.trim() === '') return
 
-  const result = await callSummarizer(ctx, agent, cfg, record?.summary, digest)
+  // Detect the user's current working language so the fold can pin the
+  // summary to a concrete language. CJK-defaulting backends ignore a soft
+  // "match the user's language" instruction; naming the language is what
+  // actually changes their output. An explicit `cfg.language` still wins.
+  const detected = detectSessionLanguage(userTextOf(fresh))
+
+  const result = await callSummarizer(ctx, agent, cfg, record?.summary, digest, detected)
   if (result === undefined) {
     // The subagent produced nothing usable; still advance the cursor so the
     // same events are not re-fed forever.
@@ -293,12 +307,13 @@ async function callSummarizer(
   cfg: ResolvedConfig,
   oldSummary: string | undefined,
   digest: string,
+  detected: SessionLanguage,
 ): Promise<{ summary: string; title: string } | undefined> {
   const subagents = ctx.subagents
   if (subagents === undefined) return undefined
 
   const userPrompt = buildUserPrompt(oldSummary, digest)
-  const system = buildSystemPrompt(cfg.targetWords, cfg.targetCjkCharacters)
+  const system = buildSystemPrompt(cfg.targetWords, cfg.targetCjkCharacters, cfg.language, detected)
 
   // Route override: when both provider and model are configured, forward
   // them through agentOptions — a real route override the spawn provider

@@ -52,21 +52,23 @@ export function digestEvent(event: SessionEvent): string | undefined {
     case 'user/message': {
       const text = textOf(event.data.content)
       if (text === '') return undefined
-      return `用户: ${clip(text)}`
+      // English labels on purpose: the digest is model input, and Chinese
+      // labels would anchor CJK backends into answering in Chinese.
+      return `User: ${clip(text)}`
     }
     case 'assistant/message': {
       const text = textOf(event.data.message.content)
       if (text === '') return undefined
-      return `助手: ${clip(text)}`
+      return `Assistant: ${clip(text)}`
     }
     case 'tool/call': {
       const args = argsOf(event.data.arguments)
       const suffix = args === '' ? '' : `(${clip(args, 160)})`
-      return `工具调用: ${event.data.name}${suffix}`
+      return `Tool call: ${event.data.name}${suffix}`
     }
     case 'tool/result': {
       const text = textOf(event.data.message.content)
-      const prefix = event.data.error !== undefined ? '工具结果(出错)' : '工具结果'
+      const prefix = event.data.error !== undefined ? 'Tool result (error)' : 'Tool result'
       return `${prefix}: ${clip(text)}`
     }
     default:
@@ -101,4 +103,33 @@ export function digestEvents(events: readonly SessionEvent[]): string {
     start = i
   }
   return lines.slice(start).join('\n')
+}
+
+/** Cap for the text handed to language detection (recent turns only). */
+export const USER_TEXT_MAX_CHARS = 4000
+
+/**
+ * Concatenate the user's message text from a batch of events, for language
+ * detection. Only `user/message` text is used — assistant replies and tool
+ * traffic would skew the signal. The text is bounded by
+ * {@link USER_TEXT_MAX_CHARS}, keeping the NEWEST user messages (scanned from
+ * the tail) so the current working language wins when the session has
+ * switched.
+ * @param events - events in ascending seq order.
+ * @returns the recent user message text in chronological order, possibly empty.
+ */
+export function userTextOf(events: readonly SessionEvent[]): string {
+  const parts: string[] = []
+  let used = 0
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event.type !== 'user/message') continue
+    const text = textOf(event.data.content)
+    if (text === '') continue
+    const cost = text.length + 1
+    if (used + cost > USER_TEXT_MAX_CHARS) break
+    parts.unshift(text)
+    used += cost
+  }
+  return parts.join('\n')
 }
